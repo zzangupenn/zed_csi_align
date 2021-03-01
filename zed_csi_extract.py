@@ -13,8 +13,8 @@
 #   python3 zed_csi_extract.py recordings/ZED_2020-11-30-02-00-08.svo 20
 #   (this command will get you all info of frame 20 in both ZED and CSI recordings)
 
-# compressing the output .mat file takes longer time but reduces the size
-COMPRESS_MAT_FILE = True
+COMPRESS_MAT_FILE = True # compressing the output .mat file takes longer time but reduces the size
+OUTPUT_POINTCLOUD = True
 
 import numpy as np
 import os
@@ -23,9 +23,11 @@ import cv2
 import pickle as pkl
 import pyzed.sl as sl
 import bisect
-# from tqdm import tqdm
 import scipy.io as sio
 import sys
+from utils import float_to_4ints
+
+
 
 def main(argv):
 
@@ -88,19 +90,23 @@ def main(argv):
     runtime = sl.RuntimeParameters()
     svo_image = sl.Mat(resolution[1], resolution[0], sl.MAT_TYPE.U8_C4)
     depth_map = sl.Mat(resolution[1], resolution[0], sl.MAT_TYPE.F32_C1)
+    point_cloud = sl.Mat()
     out_timediff = float('inf')
     for i in range(zed.get_svo_number_of_frames()):
         if zed.grab() == sl.ERROR_CODE.SUCCESS:
             # grab the zed image and depth map
             zed.retrieve_image(svo_image, sl.VIEW.LEFT)
             zed.retrieve_measure(depth_map, sl.MEASURE.DEPTH, sl.MEM.CPU)
-            # svo_position = zed.get_svo_position()
+            if OUTPUT_POINTCLOUD:
+                zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA)
             zed_timestamp = zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_nanoseconds()/1e9
             # finds the closest frame, usually correct to a few milliseconds
             frame_idx = bisect.bisect_left(csi_timestamps, zed_timestamp)
             time_diff = csi_timestamps[frame_idx] - zed_timestamp
             if frame_idx == FRAME_IDX:
                 if out_timediff > time_diff:
+                    if OUTPUT_POINTCLOUD:
+                        out_pc = point_cloud.get_data()
                     out_depth = depth_map.get_data()
                     out_zed = cv2.cvtColor(svo_image.get_data(), cv2.COLOR_BGR2RGB)
                     out_timediff = time_diff
@@ -117,8 +123,12 @@ def main(argv):
     out_mat['time_diff' + '_'  + 'extracted'] = out_timediff
     out_mat['zed_frame' + '_'  + 'extracted'] = out_zed
     out_mat['csi_frame' + '_'  + 'extracted'] = csi_image
+    if OUTPUT_POINTCLOUD:
+        print('Outputing Point Cloud')
+        out_mat['point_cloud' + '_'  + 'extracted'] = out_pc[:, :, 0:3]
+        out_mat['point_cloud_rgb' + '_'  + 'extracted'] = np.reshape(np.array(list(map(float_to_4ints, np.reshape(out_pc[:, :, 3], (720*1280, 1))))), (720, 1280, 4)) / 255.0
     out_mat['csi_timestamp' + '_'  + 'extracted'] = csi_timestamp
-    print('Saving depth .mat file for', filename, str(FRAME_IDX), 'frame')
+    print('Saving depth .mat file for', filename, 'frame', str(FRAME_IDX))
     sio.savemat(os.path.join(OUTPUT_DIR, filename[-27:-4] + '_'  + 'extracted' + str(FRAME_IDX) + '.mat'), out_mat, do_compression=COMPRESS_MAT_FILE)
     print('Saved', os.path.join(OUTPUT_DIR, filename[-27:-4] + '_' + 'extracted' + str(FRAME_IDX) + '.mat'))
 

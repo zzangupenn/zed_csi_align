@@ -23,6 +23,7 @@
 
 # compressing the output .mat file takes longer time but reduces the size
 COMPRESS_MAT_FILE = True
+OUTPUT_POINTCLOUD = True
 
 import numpy as np
 import os
@@ -31,9 +32,10 @@ import cv2
 import pickle as pkl
 import pyzed.sl as sl
 import bisect
-# from tqdm import tqdm
+from tqdm import tqdm
 import scipy.io as sio
 import sys
+from utils import float_to_4ints
 
 def main(argv):
 
@@ -102,14 +104,19 @@ def main(argv):
         runtime = sl.RuntimeParameters()
         svo_image = sl.Mat(resolution[1], resolution[0], sl.MAT_TYPE.U8_C4)
         depth_map = sl.Mat(resolution[1], resolution[0], sl.MAT_TYPE.F32_C1)
+        point_cloud = sl.Mat()
         out_depth = []
         out_timediff = np.ones([num_frame]) * float('inf')
         out_zed = []
-        for i in range(zed.get_svo_number_of_frames()):
+        out_pc = []
+        out_pc_rgb = []
+        for i in tqdm(range(zed.get_svo_number_of_frames())):
             if zed.grab() == sl.ERROR_CODE.SUCCESS:
                 # grab the zed image and depth map
                 zed.retrieve_image(svo_image, sl.VIEW.LEFT)
                 zed.retrieve_measure(depth_map, sl.MEASURE.DEPTH, sl.MEM.CPU)
+                if OUTPUT_POINTCLOUD:
+                    zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA)
                 # svo_position = zed.get_svo_position()
                 zed_timestamp = zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_nanoseconds()/1e9
                 # finds the closest frame, usually correct to a few milliseconds
@@ -120,15 +127,28 @@ def main(argv):
                         if len(out_depth) == frame_idx + 1:
                             out_depth.pop()
                             out_zed.pop()
+                            if OUTPUT_POINTCLOUD:
+                                out_pc.pop()
+                                out_pc_rgb.pop()
+                        if OUTPUT_POINTCLOUD:
+                            pc_data = point_cloud.get_data()
+                            out_pc.append(pc_data[:, :, 0:3])
+                            out_pc_rgb.append(np.reshape(np.array(list(map(float_to_4ints, np.reshape(pc_data[:, :, 3], (720*1280, 1))))), (720, 1280, 4)) / 255.0)
                         out_depth.append(depth_map.get_data())
                         out_zed.append(cv2.cvtColor(svo_image.get_data(), cv2.COLOR_BGR2RGB))
                         out_timediff[frame_idx] = time_diff
+            if i == 2:
+                break
                 
         out_mat = {}
         out_mat['depth'] = out_depth
         out_mat['time_diff'] = out_timediff
         out_mat['zed_frame'] = out_zed
-        print('Saving depth .mat file for', filename)
+        if OUTPUT_POINTCLOUD:
+            print('Outputing Point Cloud')
+            out_mat['point_cloud'] = out_pc
+            out_mat['point_cloud_rgb'] = out_pc_rgb
+        print('Saving depth .mat file for', filename, 'This will take a while.')
         sio.savemat(os.path.join(OUTPUT_DIR, filename[-27:-4] + '_aligned.mat'), out_mat, do_compression=COMPRESS_MAT_FILE)
         print('Saved', os.path.join(OUTPUT_DIR, filename[-27:-4] + '_aligned.mat'))
 
